@@ -25,6 +25,7 @@ def _price_frame(offset: float = 0.0):
 def test_backtest_runs_with_synthetic_data():
     cfg = load_config("config.yaml")
     cfg["backtest"]["top_k"] = 1
+    cfg["data"]["use_fundamental"] = False
     universe = load_universe(cfg).head(2)
     price_data = {universe.iloc[0]["etf_code"]: _price_frame(0), universe.iloc[1]["etf_code"]: _price_frame(0.2)}
     benchmark = _price_frame(0.1)

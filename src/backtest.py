@@ -5,8 +5,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .features_daily import add_daily_features, weekly_signal_dates
+from .features_daily import add_daily_features, biweekly_signal_dates, weekly_signal_dates
 from .features_fundamental import compute_fundamental_scores
+from .market_features import compute_market_context
 from .strategy import build_weekly_ranking
 
 
@@ -31,6 +32,7 @@ def prepare_features(price_data: dict[str, pd.DataFrame], universe: pd.DataFrame
         feat["etf_code"] = code
         feat["etf_name"] = meta.get(code, {}).get("etf_name", code)
         feat["theme"] = meta.get(code, {}).get("theme", "")
+        feat["style"] = meta.get(code, {}).get("style", "value")
         frames.append(feat)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
@@ -50,27 +52,40 @@ def run_backtest(price_data: dict[str, pd.DataFrame], universe: pd.DataFrame, be
     if panel.empty:
         raise RuntimeError("没有可用 ETF 日线数据。请检查 Tushare 权限或 data/local_csv 本地CSV。")
     bench_feat = add_daily_features(benchmark, config) if not benchmark.empty else pd.DataFrame()
+    if not bench_feat.empty and "ret_60" in bench_feat.columns:
+        bench_ret = bench_feat[["trade_date", "ret_60", "ret_120"]].rename(columns={"ret_60": "benchmark_ret_60", "ret_120": "benchmark_ret_120"})
+        panel = panel.merge(bench_ret, on="trade_date", how="left")
+        panel["relative_ret_60"] = panel["ret_60"] - panel["benchmark_ret_60"]
+        panel["relative_ret_120"] = panel["ret_120"] - panel["benchmark_ret_120"]
     all_dates = sorted(panel["trade_date"].drop_duplicates())
-    signal_dates = weekly_signal_dates(pd.Series(all_dates))
+    if config["backtest"].get("rebalance_frequency", "weekly") == "biweekly":
+        signal_dates = biweekly_signal_dates(pd.Series(all_dates))
+    else:
+        signal_dates = weekly_signal_dates(pd.Series(all_dates))
     exec_map = _execution_dates(all_dates, signal_dates)
     fundamental = compute_fundamental_scores(config, signal_dates)
+    market_context = compute_market_context(config, signal_dates, bench_feat)
 
     initial_cash = float(config["backtest"].get("initial_cash", 1_000_000))
     commission = float(config["backtest"].get("commission_rate", 0.0003))
     slippage = float(config["backtest"].get("slippage", 0.0))
     execution_price = config["backtest"].get("execution_price", "close")
+    min_trade_value = float(config["strategy"].get("min_trade_value", 1000))
+    rebalance_tolerance = float(config["strategy"].get("rebalance_tolerance", 0.02))
 
     cash = initial_cash
     shares: dict[str, float] = {}
     equity_rows, trade_rows, pos_rows, rank_rows = [], [], [], []
     current_weights: dict[str, float] = {}
+    meta = universe.set_index("etf_code").to_dict("index")
 
     price_pivot = panel.pivot(index="trade_date", columns="etf_code", values="close")
+    valuation_pivot = price_pivot.ffill()
     open_pivot = panel.pivot(index="trade_date", columns="etf_code", values="open")
 
     for dt in all_dates:
         dt = pd.Timestamp(dt)
-        prices = price_pivot.loc[dt].dropna()
+        prices = valuation_pivot.loc[dt].dropna()
         holdings_value = sum(shares.get(c, 0.0) * prices.get(c, np.nan) for c in shares)
         holdings_value = 0.0 if pd.isna(holdings_value) else holdings_value
         equity = cash + holdings_value
@@ -84,7 +99,11 @@ def run_backtest(price_data: dict[str, pd.DataFrame], universe: pd.DataFrame, be
                 b = bench_feat[bench_feat["trade_date"] == sig]
                 bench_row = b.iloc[0] if not b.empty else None
             f = fundamental[fundamental["trade_date"] == sig] if not fundamental.empty else pd.DataFrame()
-            ranking = build_weekly_ranking(snap, f, bench_row, config)
+            mc = pd.Series(dtype=object)
+            if not market_context.empty:
+                mrow = market_context[market_context["trade_date"] == sig]
+                mc = mrow.iloc[0] if not mrow.empty else pd.Series(dtype=object)
+            ranking = build_weekly_ranking(snap, f, bench_row, config, current_holdings=set(shares.keys()), market_context=mc)
             if not ranking.empty:
                 ranking["signal_date"] = sig
                 ranking["execution_date"] = dt
@@ -100,7 +119,19 @@ def run_backtest(price_data: dict[str, pd.DataFrame], universe: pd.DataFrame, be
                             value = shares[code] * px * (1 - slippage)
                             fee = value * commission
                             cash += value - fee
-                            trade_rows.append({"trade_date": dt, "etf_code": code, "side": "SELL", "price": px, "shares": shares[code], "value": value, "fee": fee})
+                            info = meta.get(code, {})
+                            trade_rows.append({
+                                "trade_date": dt,
+                                "etf_code": code,
+                                "etf_name": info.get("etf_name", code),
+                                "theme": info.get("theme", ""),
+                                "style": info.get("style", ""),
+                                "side": "SELL",
+                                "price": px,
+                                "shares": shares[code],
+                                "value": value,
+                                "fee": fee,
+                            })
                         shares.pop(code, None)
                 for code, target in target_values.items():
                     px = exec_prices.get(code, np.nan)
@@ -108,24 +139,52 @@ def run_backtest(price_data: dict[str, pd.DataFrame], universe: pd.DataFrame, be
                         continue
                     current_value = shares.get(code, 0.0) * px
                     diff = target - current_value
-                    if abs(diff) < 1:
+                    if abs(diff) < min_trade_value or (equity and abs(diff) / equity < rebalance_tolerance):
                         continue
                     if diff > 0:
+                        if cash < min_trade_value:
+                            continue
                         buy_value = min(diff, cash) * (1 - commission)
                         qty = buy_value / (px * (1 + slippage))
                         fee = buy_value * commission
                         cash -= buy_value + fee
                         shares[code] = shares.get(code, 0.0) + qty
-                        trade_rows.append({"trade_date": dt, "etf_code": code, "side": "BUY", "price": px, "shares": qty, "value": buy_value, "fee": fee})
+                        info = meta.get(code, {})
+                        trade_rows.append({
+                            "trade_date": dt,
+                            "etf_code": code,
+                            "etf_name": info.get("etf_name", code),
+                            "theme": info.get("theme", ""),
+                            "style": info.get("style", ""),
+                            "side": "BUY",
+                            "price": px,
+                            "shares": qty,
+                            "value": buy_value,
+                            "fee": fee,
+                        })
                     else:
                         qty = min(shares.get(code, 0.0), abs(diff) / px)
                         value = qty * px * (1 - slippage)
+                        if value < min_trade_value:
+                            continue
                         fee = value * commission
                         cash += value - fee
                         shares[code] = shares.get(code, 0.0) - qty
-                        trade_rows.append({"trade_date": dt, "etf_code": code, "side": "SELL", "price": px, "shares": qty, "value": value, "fee": fee})
+                        info = meta.get(code, {})
+                        trade_rows.append({
+                            "trade_date": dt,
+                            "etf_code": code,
+                            "etf_name": info.get("etf_name", code),
+                            "theme": info.get("theme", ""),
+                            "style": info.get("style", ""),
+                            "side": "SELL",
+                            "price": px,
+                            "shares": qty,
+                            "value": value,
+                            "fee": fee,
+                        })
 
-        prices = price_pivot.loc[dt].dropna()
+        prices = valuation_pivot.loc[dt].dropna()
         holdings_value = sum(shares.get(c, 0.0) * prices.get(c, np.nan) for c in shares)
         holdings_value = 0.0 if pd.isna(holdings_value) else holdings_value
         equity = cash + holdings_value
@@ -136,9 +195,19 @@ def run_backtest(price_data: dict[str, pd.DataFrame], universe: pd.DataFrame, be
             if pd.notna(px):
                 w = qty * px / equity if equity else 0.0
                 total_weight += w
-                pos_rows.append({"trade_date": dt, "etf_code": code, "shares": qty, "close": px, "weight": w})
+                info = meta.get(code, {})
+                pos_rows.append({
+                    "trade_date": dt,
+                    "etf_code": code,
+                    "etf_name": info.get("etf_name", code),
+                    "theme": info.get("theme", ""),
+                    "style": info.get("style", ""),
+                    "shares": qty,
+                    "close": px,
+                    "weight": w,
+                })
         if not shares:
-            pos_rows.append({"trade_date": dt, "etf_code": "CASH", "shares": 0, "close": 1, "weight": 1.0})
+            pos_rows.append({"trade_date": dt, "etf_code": "CASH", "etf_name": "现金", "theme": "现金", "style": "cash", "shares": 0, "close": 1, "weight": 1.0})
 
     weekly = pd.concat(rank_rows, ignore_index=True) if rank_rows else pd.DataFrame()
     return BacktestResult(

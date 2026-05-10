@@ -18,37 +18,86 @@ backtest:
   initial_cash: 1000000
   commission_rate: 0.0003
   slippage: 0.0
-  rebalance_frequency: "weekly"
+  rebalance_frequency: "biweekly"
   execution_price: "close"
   top_k: 1
   min_final_score: null
 
 strategy:
+  version: "0.4-dividend-crowding-margin"
   liquidity_threshold: 30000000
   ma_short: 20
   ma_medium: 60
   ma_long: 120
   market_ma: 120
-  technical_weight: 0.70
-  fundamental_weight: 0.30
   max_intraday_premium: 0.05
   intraday_below_ma_bars: 3
-  technical_factors:
-    ret_20: 0.25
-    ret_60: 0.35
-    ret_120: 0.20
+  switch_buffer: 0.20
+  keep_if_rank_within: 2
+  min_trade_value: 1000
+  rebalance_tolerance: 0.02
+  style_top_k:
+    growth: 1
+    stable_value: 1
+    cyclical_value: 1
+  style_allocation:
+    strong:
+      growth: 0.50
+      stable_value: 0.35
+      cyclical_value: 0.15
+      cash: 0.00
+    neutral:
+      growth: 0.25
+      stable_value: 0.55
+      cyclical_value: 0.10
+      cash: 0.10
+    weak:
+      growth: 0.05
+      stable_value: 0.70
+      cyclical_value: 0.05
+      cash: 0.20
+    crisis:
+      growth: 0.00
+      stable_value: 0.45
+      cyclical_value: 0.00
+      cash: 0.55
+  allocation_adjustment:
+    structure_neutral_growth_add: 0.10
+    structure_weak_growth_add: 0.05
+    structure_weak_cyclical_add: 0.05
+    margin_growth_cut: 0.10
+    margin_cyclical_cut: 0.05
+    max_growth: 0.60
+    max_cyclical_value: 0.20
+    min_stable_value: 0.25
+  growth_factors:
+    ret_60: 0.25
+    ret_120: 0.15
+    ret_20: 0.10
+    relative_ret_60: 0.15
+    trend_structure: 0.15
     vol_20: -0.10
-    max_drawdown_60: -0.10
     premium_20: -0.10
-  fundamental_factors:
-    valuation_percentile:
-      weight: 0.35
-    roe:
-      weight: 0.25
-    net_profit_growth:
-      weight: 0.25
-    revenue_growth:
-      weight: 0.15
+    amount_crowding: -0.05
+    valuation_percentile: -0.05
+  stable_value_factors:
+    dividend_yield_abs: 0.15
+    dividend_yield_percentile: 0.15
+    dividend_spread: 0.20
+    dividend_spread_percentile: 0.15
+    valuation_score: 0.15
+    ret_60: 0.05
+    vol_20: -0.10
+    drawdown_risk_60: -0.05
+  cyclical_value_factors:
+    ret_60: 0.20
+    ret_120: 0.15
+    relative_ret_60: 0.20
+    valuation_score: 0.15
+    dividend_yield_abs: 0.05
+    vol_20: -0.10
+    drawdown_risk_60: -0.10
+    amount_crowding: -0.05
 
 manual_fundamental_scores:
   "证券": 0.50
@@ -68,100 +117,134 @@ manual_fundamental_scores:
   "电力": 0.50
   "红利": 0.55
 
+manual_dividend_yield:
+  "证券": 0.018
+  "银行": 0.045
+  "地产": 0.020
+  "消费": 0.018
+  "医药": 0.012
+  "半导体": 0.004
+  "芯片": 0.004
+  "人工智能": 0.003
+  "军工": 0.006
+  "新能源车": 0.005
+  "光伏": 0.006
+  "有色": 0.020
+  "煤炭": 0.060
+  "钢铁": 0.030
+  "电力": 0.035
+  "红利": 0.055
+
 etf_universe:
   - etf_code: "512000.SH"
     etf_name: "券商ETF"
     theme: "证券"
+    style: "cyclical_value"
     tracking_index_code: null
     sw_industry_code: "801193.SI"
     enable_fundamental: true
   - etf_code: "512800.SH"
     etf_name: "银行ETF"
     theme: "银行"
+    style: "stable_value"
     tracking_index_code: null
     sw_industry_code: "801780.SI"
     enable_fundamental: true
   - etf_code: "512200.SH"
     etf_name: "地产ETF"
     theme: "地产"
+    style: "cyclical_value"
     tracking_index_code: null
     sw_industry_code: "801180.SI"
     enable_fundamental: true
   - etf_code: "159928.SZ"
     etf_name: "消费ETF"
     theme: "消费"
+    style: "stable_value"
     tracking_index_code: null
     sw_industry_code: "801120.SI"
     enable_fundamental: true
   - etf_code: "512010.SH"
     etf_name: "医药ETF"
     theme: "医药"
+    style: "growth"
     tracking_index_code: null
     sw_industry_code: "801150.SI"
     enable_fundamental: true
   - etf_code: "512480.SH"
     etf_name: "半导体ETF"
     theme: "半导体"
+    style: "growth"
     tracking_index_code: null
     sw_industry_code: "801081.SI"
     enable_fundamental: true
   - etf_code: "159995.SZ"
     etf_name: "芯片ETF"
     theme: "芯片"
+    style: "growth"
     tracking_index_code: null
     sw_industry_code: "801081.SI"
     enable_fundamental: true
   - etf_code: "159819.SZ"
     etf_name: "人工智能ETF"
     theme: "人工智能"
+    style: "growth"
     tracking_index_code: null
     sw_industry_code: "801750.SI"
     enable_fundamental: true
   - etf_code: "512660.SH"
     etf_name: "军工ETF"
     theme: "军工"
+    style: "growth"
     tracking_index_code: null
     sw_industry_code: "801740.SI"
     enable_fundamental: true
   - etf_code: "515030.SH"
     etf_name: "新能源车ETF"
     theme: "新能源车"
+    style: "growth"
     tracking_index_code: null
     sw_industry_code: "801950.SI"
     enable_fundamental: true
   - etf_code: "515790.SH"
     etf_name: "光伏ETF"
     theme: "光伏"
+    style: "growth"
     tracking_index_code: null
     sw_industry_code: "801730.SI"
     enable_fundamental: true
   - etf_code: "512400.SH"
     etf_name: "有色金属ETF"
     theme: "有色"
+    style: "cyclical_value"
     tracking_index_code: null
     sw_industry_code: "801050.SI"
     enable_fundamental: true
   - etf_code: "515220.SH"
     etf_name: "煤炭ETF"
     theme: "煤炭"
+    style: "cyclical_value"
     tracking_index_code: null
     sw_industry_code: "801950.SI"
     enable_fundamental: true
   - etf_code: "515210.SH"
     etf_name: "钢铁ETF"
     theme: "钢铁"
+    style: "cyclical_value"
     tracking_index_code: null
     sw_industry_code: "801040.SI"
     enable_fundamental: true
   - etf_code: "561560.SH"
     etf_name: "电力ETF"
     theme: "电力"
+    style: "stable_value"
     tracking_index_code: null
     sw_industry_code: "801160.SI"
     enable_fundamental: true
   - etf_code: "510880.SH"
     etf_name: "红利ETF"
     theme: "红利"
+    style: "stable_value"
     tracking_index_code: null
     sw_industry_code: null
     enable_fundamental: true
